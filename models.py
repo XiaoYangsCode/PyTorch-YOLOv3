@@ -18,6 +18,7 @@ def create_modules(module_defs):
     Constructs module list of layer blocks from module configuration in module_defs
     """
     hyperparams = module_defs.pop(0)
+    # output_filters first is img chanel = 3
     output_filters = [int(hyperparams["channels"])]
     module_list = nn.ModuleList()
     for module_i, module_def in enumerate(module_defs):
@@ -27,6 +28,7 @@ def create_modules(module_defs):
             bn = int(module_def["batch_normalize"])
             filters = int(module_def["filters"])
             kernel_size = int(module_def["size"])
+            # pad config is not use
             pad = (kernel_size - 1) // 2
             modules.add_module(
                 f"conv_{module_i}",
@@ -47,6 +49,7 @@ def create_modules(module_defs):
         elif module_def["type"] == "maxpool":
             kernel_size = int(module_def["size"])
             stride = int(module_def["stride"])
+            # pad make sure size not change ,after pool 
             if kernel_size == 2 and stride == 1:
                 modules.add_module(f"_debug_padding_{module_i}", nn.ZeroPad2d((0, 1, 0, 1)))
             maxpool = nn.MaxPool2d(kernel_size=kernel_size, stride=stride, padding=int((kernel_size - 1) // 2))
@@ -56,11 +59,13 @@ def create_modules(module_defs):
             upsample = Upsample(scale_factor=int(module_def["stride"]), mode="nearest")
             modules.add_module(f"upsample_{module_i}", upsample)
 
+        # dense block
         elif module_def["type"] == "route":
             layers = [int(x) for x in module_def["layers"].split(",")]
             filters = sum([output_filters[1:][i] for i in layers])
             modules.add_module(f"route_{module_i}", EmptyLayer())
 
+        # res block
         elif module_def["type"] == "shortcut":
             filters = output_filters[1:][int(module_def["from"])]
             modules.add_module(f"shortcut_{module_i}", EmptyLayer())
@@ -109,7 +114,7 @@ class YOLOLayer(nn.Module):
     def __init__(self, anchors, num_classes, img_dim=416):
         super(YOLOLayer, self).__init__()
         self.anchors = anchors
-        self.num_anchors = len(anchors)
+        self.num_anchors = len(anchors)     # 3
         self.num_classes = num_classes
         self.ignore_thres = 0.5
         self.mse_loss = nn.MSELoss()
@@ -124,11 +129,14 @@ class YOLOLayer(nn.Module):
         self.grid_size = grid_size
         g = self.grid_size
         FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+        # down sample scale
         self.stride = self.img_dim / self.grid_size
         # Calculate offsets for each grid
         self.grid_x = torch.arange(g).repeat(g, 1).view([1, 1, g, g]).type(FloatTensor)
         self.grid_y = torch.arange(g).repeat(g, 1).t().view([1, 1, g, g]).type(FloatTensor)
+        # calculate relative anchor w and h for grid
         self.scaled_anchors = FloatTensor([(a_w / self.stride, a_h / self.stride) for a_w, a_h in self.anchors])
+        # reshape for broadcast (batch,num_anchors,x_index,y_index)
         self.anchor_w = self.scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1))
         self.anchor_h = self.scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
 
@@ -142,13 +150,14 @@ class YOLOLayer(nn.Module):
         num_samples = x.size(0)
         grid_size = x.size(2)
 
+        # reshape for prediction
         prediction = (
             x.view(num_samples, self.num_anchors, self.num_classes + 5, grid_size, grid_size)
             .permute(0, 1, 3, 4, 2)
             .contiguous()
         )
-
-        # Get outputs
+        # prediction (batch, numm_anchors, grid, grid, num_class+5)
+        # Get outputs decoding 
         x = torch.sigmoid(prediction[..., 0])  # Center x
         y = torch.sigmoid(prediction[..., 1])  # Center y
         w = prediction[..., 2]  # Width
@@ -160,13 +169,16 @@ class YOLOLayer(nn.Module):
         if grid_size != self.grid_size:
             self.compute_grid_offsets(grid_size, cuda=x.is_cuda)
 
-        # Add offset and scale with anchors
+        # Add offset and scale with anchors for grid
         pred_boxes = FloatTensor(prediction[..., :4].shape)
         pred_boxes[..., 0] = x.data + self.grid_x
         pred_boxes[..., 1] = y.data + self.grid_y
         pred_boxes[..., 2] = torch.exp(w.data) * self.anchor_w
         pred_boxes[..., 3] = torch.exp(h.data) * self.anchor_h
 
+        # pred_boxes shape (batch,num_anchors*grid*grid,4)
+        # pred_conf  shape (batch,num_anchors*grid*grid,1)
+        # pred_cls   shape (batch,num_anchors*grid*grid,nun_classes)
         output = torch.cat(
             (
                 pred_boxes.view(num_samples, -1, 4) * self.stride,
@@ -175,7 +187,16 @@ class YOLOLayer(nn.Module):
             ),
             -1,
         )
-
+        
+        # obj_mask = BoolTensor(nB, nA, nG, nG).fill_(0)
+        #     noobj_mask = BoolTensor(nB, nA, nG, nG).fill_(1)
+        #     class_mask = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     iou_scores = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     tx = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     ty = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     tw = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     th = FloatTensor(nB, nA, nG, nG).fill_(0)
+        #     tcls = FloatTensor(nB, nA, nG, nG, nC).fill_(0)
         if targets is None:
             return output, 0
         else:
@@ -238,11 +259,12 @@ class Darknet(nn.Module):
         self.module_defs = parse_model_config(config_path)
         self.hyperparams, self.module_list = create_modules(self.module_defs)
         self.yolo_layers = [layer[0] for layer in self.module_list if isinstance(layer[0], YOLOLayer)]
-        self.img_size = img_size
+        self.img_size = img_size    # not use this size, size not solid for multi_scale training 
         self.seen = 0
         self.header_info = np.array([0, 0, 0, self.seen, 0], dtype=np.int32)
 
     def forward(self, x, targets=None):
+        # input_img_size (img_dim,img_dim)
         img_dim = x.shape[2]
         loss = 0
         layer_outputs, yolo_outputs = [], []

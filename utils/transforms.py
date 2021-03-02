@@ -11,6 +11,9 @@ import torchvision.transforms as transforms
 
 
 class ImgAug(object):
+    """
+    imgaug thirdlib for Image Transform，parent class
+    """
     def __init__(self, augmentations=[]):
         self.augmentations = augmentations
 
@@ -60,21 +63,24 @@ class RelativeLabels(object):
 
     def __call__(self, data):
         img, boxes = data
-        w, h, _ = img.shape 
-        boxes[:,[1,3]] /= h
-        boxes[:,[2,4]] /= w
+        h, w, _ = img.shape 
+        boxes[:,[1,3]] /= w
+        boxes[:,[2,4]] /= h
         return img, boxes
 
 
 class AbsoluteLabels(object):
+    """
+    relative to absolute box coordinate (x,y,w,h)
+    """
     def __init__(self, ):
         pass
 
     def __call__(self, data):
         img, boxes = data
-        w, h, _ = img.shape 
-        boxes[:,[1,3]] *= h
-        boxes[:,[2,4]] *= w
+        h, w, _ = img.shape 
+        boxes[:,[1,3]] *= w
+        boxes[:,[2,4]] *= h
         return img, boxes
 
 
@@ -93,9 +99,9 @@ class ToTensor(object):
 
     def __call__(self, data):
         img, boxes = data
-        # Extract image as PyTorch tensor
+        # Extract image as PyTorch tensor (h,w,3)->(3,h,w)
         img = transforms.ToTensor()(img)
-
+        # add box dim for index  all dim (index,category,x,y,w,h)
         bb_targets = torch.zeros((len(boxes), 6))
         bb_targets[:, 1:] = transforms.ToTensor()(boxes)
 

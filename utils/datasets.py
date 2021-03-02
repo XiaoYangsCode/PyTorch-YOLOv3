@@ -21,6 +21,12 @@ import torchvision.transforms as transforms
 
 
 def pad_to_square(img, pad_value):
+    """[将非正方形的图片填充为正方形图片]
+
+    Args:
+        img : [图片 shape (c,h,w)]
+        pad_value : [填充的默认值]
+    """
     c, h, w = img.shape
     dim_diff = np.abs(h - w)
     # (upper / left) padding and (lower / right) padding
@@ -34,11 +40,22 @@ def pad_to_square(img, pad_value):
 
 
 def resize(image, size):
+    """图像差值到相应的尺寸
+    Args:
+        image : shape (c,h,w)
+        size : final size
+
+    Returns:
+        image : shape (c,h,w)
+    """
     image = F.interpolate(image.unsqueeze(0), size=size, mode="nearest").squeeze(0)
     return image
 
 
 class ImageFolder(Dataset):
+    """
+    图片数据集类，定义了数据集的读取方式 和 transform 进行 pad resize 等操作 
+    """
     def __init__(self, folder_path, transform=None):
         self.files = sorted(glob.glob("%s/*.*" % folder_path))
         self.transform = transform
@@ -49,6 +66,8 @@ class ImageFolder(Dataset):
         img = np.array(
             Image.open(img_path).convert('RGB'), 
             dtype=np.uint8)
+        
+        # img shape (H,W,C)
 
         # Label Placeholder
         boxes = np.zeros((1, 5))
@@ -68,6 +87,7 @@ class ListDataset(Dataset):
         with open(list_path, "r") as file:
             self.img_files = file.readlines()
 
+        # bounding box info path
         self.label_files = [
             path.replace("images", "labels").replace(".png", ".txt").replace(".jpg", ".txt")
             for path in self.img_files
@@ -76,7 +96,7 @@ class ListDataset(Dataset):
         self.img_size = img_size
         self.max_objects = 100
         self.multiscale = multiscale
-        self.min_size = self.img_size - 3 * 32
+        self.min_size = self.img_size - 3 * 32      # size range for multiscale training
         self.max_size = self.img_size + 3 * 32
         self.batch_count = 0
         self.transform = transform
@@ -84,7 +104,7 @@ class ListDataset(Dataset):
     def __getitem__(self, index):
         
         # ---------
-        #  Image
+        #  Image shape (h,w,c)
         # ---------
         try:
 
@@ -110,7 +130,7 @@ class ListDataset(Dataset):
             return
 
         # -----------
-        #  Transform
+        #  Transform bb_targets shape (-1, 6)   (index,category,x,y,w,h)
         # -----------
         if self.transform:
             try:
@@ -123,20 +143,22 @@ class ListDataset(Dataset):
 
     def collate_fn(self, batch):
         self.batch_count += 1
-
+        # batch have transformed
         # Drop invalid images
         batch = [data for data in batch if data is not None]
 
+        # *batch = (path,img,bb_targets) ... 
+        # list( zip(*batch) ) = [(path,...), (img,...), (bb_targets,...)]
         paths, imgs, bb_targets = list(zip(*batch))
         
         # Selects new image size every tenth batch
         if self.multiscale and self.batch_count % 10 == 0:
             self.img_size = random.choice(range(self.min_size, self.max_size + 1, 32))
         
-        # Resize images to input shape
+        # Resize images to input shape  (batch,c,h,w)    img (c,h,w)    input imgs is tuple    len = batch
         imgs = torch.stack([resize(img, self.img_size) for img in imgs])
 
-        # Add sample index to targets
+        # Add sample index to targets shape (-1, 6)    bb_targets is tuple len = batch
         for i, boxes in enumerate(bb_targets):
             boxes[:, 0] = i
         bb_targets = torch.cat(bb_targets, 0)

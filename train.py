@@ -52,13 +52,15 @@ if __name__ == "__main__":
     os.makedirs("output", exist_ok=True)
     os.makedirs("checkpoints", exist_ok=True)
 
-    # Get data configuration
+    # Get data configuration   return data config dic
     data_config = parse_data_config(opt.data_config)
+    # get train and valid data path from config
     train_path = data_config["train"]
     valid_path = data_config["valid"]
+    # read classes list from config path
     class_names = load_classes(data_config["names"])
 
-    # Initiate model
+    # Initiate model config/yolov3.cfg 
     model = Darknet(opt.model_def).to(device)
     model.apply(weights_init_normal)
 

@@ -191,6 +191,16 @@ def get_batch_statistics(outputs, targets, iou_threshold):
 
 
 def bbox_wh_iou(wh1, wh2):
+    """calculate iou between bbox and gt box
+        same center, use w and h 
+    Args:
+        wh1: shape (2)
+        wh2: shape (num_gt_box,2)
+
+    w1,h1   shape       (1)
+    w2,h2   shape       (num_gt_box)
+    torch.min   shape   (num_gt_box)
+    """
     wh2 = wh2.t()
     w1, h1 = wh1[0], wh1[1]
     w2, h2 = wh2[0], wh2[1]
@@ -278,6 +288,13 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
     BoolTensor = torch.cuda.BoolTensor if pred_boxes.is_cuda else torch.BoolTensor
     FloatTensor = torch.cuda.FloatTensor if pred_boxes.is_cuda else torch.FloatTensor
 
+    # pred_boxes shape (batch,num_anchors,grid,grid,4)    relative->absolute
+    # pred_cls   shape (batch,num_anchors,grid,grid,nun_classes)
+    # target     shape (batch_index,class,x,y,w,h)
+    # nB = batch_size
+    # nA = num_anchors
+    # nC = num_class
+    # nG = grid
     nB = pred_boxes.size(0)
     nA = pred_boxes.size(1)
     nC = pred_cls.size(-1)
@@ -294,19 +311,27 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
     th = FloatTensor(nB, nA, nG, nG).fill_(0)
     tcls = FloatTensor(nB, nA, nG, nG, nC).fill_(0)
 
-    # Convert to position relative to box
+    # Convert to position relative(grid) to box
     target_boxes = target[:, 2:6] * nG
     gxy = target_boxes[:, :2]
     gwh = target_boxes[:, 2:]
-    # Get anchors with best iou
+    # Get anchors with best     iou shape (num_anchors,num_gt_box)      best_n(anchor indices) shape (num_gt_box)
     ious = torch.stack([bbox_wh_iou(anchor, gwh) for anchor in anchors])
     best_ious, best_n = ious.max(0)
     # Separate target values
+    # b is index for img in a batch, shape (num_gt_box)
+    # target_labels is gt_box label, shape (num_gt_box)
+    # gx is gt_box x coordinate, shape (num_gt_box)
+    # gy is gt_box y coordinate, shape (num_gt_box)
+    # gw is gt_box wight, shape (num_gt_box)
+    # gh is gt_box hight, shape (num_gt_box)
+    # gi is gt_box x coordinate(long), shape (num_gt_box)
+    # gj is gt_box y coordinate(long), shape (num_gt_box)
     b, target_labels = target[:, :2].long().t()
     gx, gy = gxy.t()
     gw, gh = gwh.t()
     gi, gj = gxy.long().t()
-    # Set masks
+    # Set mask
     obj_mask[b, best_n, gj, gi] = 1
     noobj_mask[b, best_n, gj, gi] = 0
 
@@ -314,7 +339,7 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
     for i, anchor_ious in enumerate(ious.t()):
         noobj_mask[b[i], anchor_ious > ignore_thres, gj[i], gi[i]] = 0
 
-    # Coordinates
+    # Coordinates decoding
     tx[b, best_n, gj, gi] = gx - gx.floor()
     ty[b, best_n, gj, gi] = gy - gy.floor()
     # Width and height
@@ -323,6 +348,7 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
     # One-hot encoding of label
     tcls[b, best_n, gj, gi, target_labels] = 1
     # Compute label correctness and iou at best anchor
+    # pred_cls   shape (batch,num_anchors,grid,grid,nun_classes)
     class_mask[b, best_n, gj, gi] = (pred_cls[b, best_n, gj, gi].argmax(-1) == target_labels).float()
     iou_scores[b, best_n, gj, gi] = bbox_iou(pred_boxes[b, best_n, gj, gi], target_boxes, x1y1x2y2=False)
 

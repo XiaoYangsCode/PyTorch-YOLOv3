@@ -13,3 +13,6 @@ checkpoints
 
 .vscode/
 logs/
+
+weights/darknet53.conv.74
+test_func.py
